@@ -10,6 +10,8 @@
 
     <title>3M ASD Tool Up Program</title>
 
+    @include('partials.favicon')
+
     <!-- Scripts -->
     <script src="{{ asset('js/app.js') }}" defer></script>
     <link href="{{ asset('css/main.css') }}" rel="stylesheet">
@@ -75,7 +77,7 @@
 
                        
                             <div class='submit-container'>
-                                <button type="submit-btn">
+                                <button type="submit">
                                     {{ __('Login') }}
                                 </button>
 
