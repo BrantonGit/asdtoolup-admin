@@ -1,0 +1,13 @@
+/node_modules
+/uploads
+Homestead.json
+Homestead.yaml
+npm-debug.log
+yarn-error.log
+test.json
+
+.env
+.env.*
+!.env.example
+.DS_Store
+/storage/oauth-*.key

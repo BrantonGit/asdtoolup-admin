@@ -1,0 +1,1133 @@
+<?php
+
+namespace TradeInTradeUp\Http\Controllers;
+
+use Validator;
+use Illuminate\Http\Request;
+use TradeInTradeUp\Submissions;
+use TradeInTradeUp\ReceiptSections;
+use TradeInTradeUp\ReceiptSectionSubmission;
+// use TradeInTradeUp\ReceiptProducts;
+use TradeInTradeUp\TradeInProducts;
+use TradeInTradeUp\TradedupSections;
+use TradeInTradeUp\TradedupSectionSubmission;
+use TradeInTradeUp\TradedinSections;
+use TradeInTradeUp\TradedinSectionSubmission;
+use TradeInTradeUp\CustomerInfoSections;
+use TradeInTradeUp\Statuses;
+use TradeInTradeUp\Reasons;
+use TradeInTradeUp\Products;
+use TradeInTradeUp\ProductCategories;
+use TradeInTradeUp\PaymentStatuses;
+use TradeInTradeUp\PaymentSection;
+use TradeInTradeUp\HistoryStages;
+use TradeInTradeUp\Brands;
+use TradeInTradeUp\FileUpload;
+use TradeInTradeUp\BrandSections;
+use TradeInTradeUp\BrandSectionSubmission;
+use TradeInTradeUp\HistoryStageSubmission;
+use TradeInTradeUp\User;
+use Illuminate\Support\Facades\Mail;
+use TradeInTradeUp\Mail\RebateUpdate;
+use TradeInTradeUp\Mail\RebateUpdatePayment;
+use TradeInTradeUp\Mail\RebateUpdateAdmin;
+use Illuminate\Support\Facades\Storage;
+use Auth;
+use Image;
+use PDF;
+use Illuminate\Support\Facades\Input;
+// use Illuminate\Contracts\Encryption\DecryptException;
+// use Illuminate\Support\Facades\Crypt;
+
+class SubmissionsController extends Controller
+{
+
+    //DIST INFO
+    //Image pathing:
+        //Live: '../../dev/3m-tradeup-server-v3//uploads/lrg-'.$filename ;
+        //Local: public_path('//uploads/lrg-'.$filename );
+
+    public function __construct()
+    {
+        //I think we only need to do this here to check for verification
+        // $this->middleware('auth');
+    }
+
+    //API Functions
+
+    //Send User a list of products
+    public function getProducts(request $request){
+
+        //I do not believe there is a french description for the products. 
+        //The client API request will need to send in a token whether or not they want the French descriptions or English.
+
+        $limit = $request->input('limit');
+        $filter = $request->input('filter');
+        $category = $request->input('category');
+
+        //If user has specified a category:
+        if(strlen($category)){
+                //If user has specified a search and category
+            if(strlen($filter)){
+                $products = Products::select()->where('active', 1)->where('category_id', $category)->where(function($query) use ($filter){
+                    // $query->where('sku', 'like', '%'.$filter.'%')->orWhere('mmm_id', 'like', '%'.$filter.'%')->orWhere('description', 'like', '%'.$filter.'%');
+                    $query->where('sku', 'like', '%'.$filter.'%')->orWhere('description_fr', 'like', '%'.$filter.'%')->orWhere('description', 'like', '%'.$filter.'%');
+                })->with('attached_category')->paginate($limit);
+            } else{
+                //If user specified category but no search filter
+                $products = Products::select()->where('active', 1)->where('category_id', $category)->with('attached_category')->paginate($limit);
+            }
+        } else {
+            if(strlen($filter)){
+                //User has specified a search filter but no specific category
+                // $products = Products::select()->where('sku', 'like', '%'.$filter.'%')->orWhere('mmm_id', 'like', '%'.$filter.'%')->orWhere('description', 'like', '%'.$filter.'%')->with('attached_category')->paginate($limit);
+                $products = Products::select()->where('active', 1)->where('sku', 'like', '%'.$filter.'%')->orWhere('description_fr', 'like', '%'.$filter.'%')->orWhere('description', 'like', '%'.$filter.'%')->with('attached_category')->paginate($limit);
+            } else {
+                //User has specified nothing, initial base load
+                $products = Products::select()->where('active', 1)->with('attached_category')->paginate($limit);
+            }
+
+        }
+        $categories = ProductCategories::select()->get()->toArray();
+        $returned_data = json_encode(array(
+            'categories' => $categories,
+            'products' => $products
+        ));
+        return $returned_data;
+    }
+
+    public function getCustomersRebate(Request $request){
+        //Need authentication to identify what user this is. 
+        //For now we will use filler.
+        $uid = Auth::id();
+        $submissions = Submissions::select()->where('customer_id', $uid)->with('author')->with('submission_status')->orderBy('created_at', 'DESC')->paginate(20);
+        return $submissions;
+    }
+
+    public function getBrands(){
+        $brands = Brands::select()->get();
+        return $brands;
+    }
+    public function getSubmissionApi($id){
+        //Need authentication to identify what user this is. 
+        //For now we will use filler.
+        $trySubmission = Submissions::select('customer_id')->where('id', $id)->first();
+        $sid = $trySubmission->customer_id;
+        if($sid !== Auth::user()->id) {
+            return response("Submission does not belong to this customer.", 403);
+        } 
+        if(Auth::user()){
+            $user = Auth::user();
+        } else {
+            $user = User::select()->where('id', 5)->first(); 
+        }
+        $userRole = "Customer";
+        $payment= PaymentSection::select()->where('submission_id', $id)->first();
+        if(!$payment){
+            $payid = "none";
+        } else {
+            $payid = $payment->id;
+        }
+        $statuses = Statuses::select('id','status')->get();
+        $submission = $this->getSubmissionData($id);
+
+        $history = $submission->history_stages;
+        $reasons = Reasons::select('id', 'reason')->get();
+        return $submission;
+    }
+
+    //===================================================================
+    //PUBLIC FUNCTIONS
+    //These functions are public but are not meant to be used by any extended class.
+    //===================================================================
+
+    //View Submission Form (Test)
+    public function submissionForm() {
+        $products = Products::select()->with('attached_category')->inRandomOrder()->limit(3)->get();
+        if($this->isCustomer()){
+            return view('testsubmission', ['products' => $products]);
+        }
+            return;
+    }
+
+    //Submit Form
+    public function createSubmission(Request $request) {
+ 
+
+        // $encrypted = Crypt::encrypt('rodney@branton.ca');
+        // $decrypted = Crypt::decryptString($encrypted);
+        // return $encrypted . ' --- ' . $decrypted;
+
+
+        //Create initial submission container
+         //return $request;
+        $decoded = json_decode($request->input('customerInfo'), true);
+        $request->merge(['customerInfo'=>$decoded]);
+      
+        // return $request->receiptProducts[0]['product_number'];
+        if(Auth::User()){
+            $user = User::select()->where('id', Auth::id())->first();
+        } else {
+            return $request;
+        }
+
+        // return $request->input('customerInfo.lang');
+        $lang = $request->input('customerInfo.lang');
+
+
+        $submission = new Submissions([
+            'customer_id' => $user->id,
+            'status' => 1,
+            'active' => 1
+        ]);
+        $submission->save();
+
+        $customerSection = $this->customerInfo($request, $submission);
+        $receiptSection = $this->receiptInfo($request, $submission);
+        
+        //Let's calculate the TOTAL rebate value here once the $tradedupSection has been created;
+        // $allRebates = TradedupSectionSubmission::select()->where('tradedup_section_id', $tradedupSection)->get()->pluck("value")->toArray();
+        // $rebateValue = array_sum($allRebates); //This is the total amount in CAD
+
+        $history = new HistoryStages([
+            'submission_id' => $submission->id,
+            'author_id' => $user->id
+        ]);
+        $history->save();
+        $submission->update([
+            'customerinfo_section_id' => $customerSection,
+            'receipts_section_id' => $receiptSection,
+            'history_stages_id' => $history->id,
+            'totalAmount' => '20'
+        ]);
+        $submission->save();
+        $historyStage = $this->historyFullSubmission($this->getSubmissionData($submission->id), "Submission created", "Demande créée");
+        $subid = $submission->id;
+        $mes = "Your rebate has been created!";
+
+        $mes2 = "A rebate has been submitted.";
+        $sub = "Rebate Created";
+        if(!$user->notifications == 0){
+        //Mail::to($user)->send(new RebateUpdate($sub, $mes, $subid, $user, $lang));
+
+        }
+       // Mail::to('rodney@branton.ca')->send(new RebateUpdateAdmin($sub, $mes2, $subid, 'Rodney', $lang));
+        //Mail::to('hdelaney@mmm.com')->send(new RebateUpdateAdmin($sub, $mes2, $subid, 'Heather', $lang));
+        return $submission->id;
+    }
+
+
+    public function getSubmissions(){
+        $submissions = Submissions::select()->get();
+        return $submissions;
+    }
+
+
+
+    public function authremoveoldfiles(Request $request){
+
+        if(Auth::check()) {
+          
+            $oldfilePath = '/uploads/'. Auth::user()->email . '/new';
+            Storage::disk('local')->deleteDirectory($oldfilePath);
+            FileUpload::where('folder', Auth::user()->email)->where('size', 'new')->delete();
+
+        } 
+            return;
+    }
+
+    public function generatePDF(){
+
+        // Country
+        $currency = 'CAD';
+        $country = 'Canada';
+        $countrycode = 'CA';
+
+        // Dates
+        $issuedate = 'April 1, 2021';
+        $expirydate = 'April 1, 2022';                                    
+
+        //Certificate Details
+        $redeemablefor = '3M™ Safety Training';
+        $certificateid = '29DJ129CA';
+        $valuereturn = 1250;
+
+        $pdf = PDF::loadView('pdf.certificate', [
+            'currency' => $currency,
+            'country' => $country,
+            'countrycode' => $countrycode,
+            'issuedate' => $issuedate,
+            'expirydate' => $expirydate,
+            'redeemablefor' => $redeemablefor,
+            'certificateid' => $certificateid,
+            'valuereturn' => $valuereturn
+        ])->setPaper('letter', 'landscape');
+        return $pdf->stream('certificate.pdf');
+
+    }
+
+
+    // ALL CURRENT REDEEM DATA
+    public function redeemdata() {
+
+        $purchased = 75000;
+        $lefttogo = 25000;
+        $trainingbucks = 1250;
+        $currenttier = 2;
+
+        return 'Test';
+
+    }
+
+    // REDEEM TRAINING BUCKS NOW
+    public function redeemnow() {
+
+
+
+        return 'Test';
+
+    }
+
+
+
+    //Admin uses this function to submit their review of the submission
+    //This function will simply change the status/comments/reasons of the current sections to the submission.
+    //This WILL NOT create any new sections
+    public function reviewSubmission(Request $request, $id){
+        
+        $submission = $this->getSubmissionData($id);
+        $subid = $submission->id;
+        $author = User::select()->where('id', $submission->customer_id)->first();
+
+        $user = Auth::user();
+        if(!$this->isClosed($id)){
+
+            //Define the current sections attached to this submission
+            $customerInfoSection = CustomerInfoSections::select()->where('id', $submission->customerinfo_section_id)->first();
+            $tradeInSection = TradedinSections::select()->where('id', $submission->tradedin_section_id)->first();
+            $tradeUpSection = TradedupSections::select()->where('id', $submission->tradedup_section_id)->first();
+            $receiptSection = ReceiptSections::select()->where('id', $submission->receipts_section_id)->first();
+        
+            //Update Customer Info Review
+            $customerInfoSection->update([
+                'status' => $request->input('customerinfoStatus'),
+                'comments' => $request->input('customerinfoComment'),
+                'reason_id' => $request->input('customerinfoReason')
+            ]);
+
+        $customerInfoSection->save();
+
+        //Update Trade In Review
+        $tradeInSection->update([
+            'status' => $request->input('tradeinsStatus'),
+            'comments' => $request->input('tradeinsComment'),
+            'reason_id' => $request->input('tradeinsReason')
+        ]);
+        $tradeInSection->save();
+
+        //Update Tool Up Review
+        $tradeUpSection->update([
+            'status' => $request->input('tradeupsStatus'),
+            'comments' => $request->input('tradeupsComment'),
+            'reason_id' => $request->input('tradeupsReason')
+        ]);
+        $tradeUpSection->save();
+            
+        //Update Receipt Info
+        $receiptSection->update([
+            'status' => $request->input('receiptStatus'),
+            'comments' =>  $request->input('receiptComment'),
+            'reason_id' => $request->input('receiptReason')
+        ]);
+        
+        $tradeUpSection->save();
+        $history = $this->historyFullSubmission($submission, "Reviewed submission", "Demande examinée");
+
+        // return $history;
+        //Compile all four sections' status. We will then check the array to see if all are approved or what statuses are prominent.
+        $submissionStatusCheck = array($customerInfoSection->status, $tradeUpSection->status, $tradeInSection->status,$receiptSection->status);
+        $submissionStatus = $this->checkSubmissionSections($submissionStatusCheck);
+
+        $duplicatepayment = PaymentSection::where('submission_id', $submission->id)->first();
+        if(empty($duplicatepayment)){
+
+        if($submissionStatus === 4){
+            $makePayment = $this->makePaymentSection($submission);
+            $subjectPay = "Rebate Ready for Payment";
+            $mesPay = "A rebate is ready for payment.";
+          //  Mail::to('rodney@branton.ca')->send(new RebateUpdatePayment($subjectPay, $mesPay, $subid, 'Rodney', "en"));
+           // Mail::to('curtis@branton.ca')->send(new RebateUpdatePayment($subjectPay, $mesPay, $subid, 'Curtis', "en"));
+        }
+            $submission->update(['status'=>$submissionStatus]);
+            $submission->save();
+            $mes = "Your rebate has been reviewed!";
+            $subject = "Rebate Reviewed";
+
+
+            //We will need to push a language element into the submission to refer to...
+            if(!$author->notifications == 0){
+          //   Mail::to($author)->send(new RebateUpdate($subject, $mes, $subid, $author, "en"));
+            }
+         }
+     
+            return redirect('/submissions/' . $submission->id);
+        }
+
+
+        return;
+    }
+    protected function makePaymentSection($submission, $value){
+        $sid = $submission->id;
+        if(!$this->isClosed($sid)){
+        $paymentSection = new PaymentSection([
+            "submission_id" => $sid,
+            "payment_amount_cad" => $value//This will eventually have to be added
+        ]);
+        $paymentSection->save();
+        return $paymentSection;
+        };
+        return;
+    }
+
+
+
+
+    //===================================================================
+    //PROTECTED FUNCTIONS
+    //These functions are meant to be inherited by their extended classes.
+    //===================================================================
+
+    protected function historyFullSubmission($submission, $message, $messagefr) {
+        
+
+        //***REMOVE THIS ONCE API AUTH IS ADDED
+        if(Auth::user()){
+            $user = Auth::user();
+        } else{
+            $user = User::select()->where('id', 5)->first();
+        }
+        // $user = User::select()->where('id', 3)->first();
+        $check = HistoryStageSubmission::select()->where([
+            ['author_id', '=', $user->id],
+            ['customerinfo_section_id', '=', $submission->customerInfo->id],
+            ['receipt_section_id', '=', $submission->receipts->id]
+        ])->first();
+            if($check !== null){
+                return;
+            } else {
+           
+        $historySection = new HistoryStageSubmission([
+            'author_id' => $user->id,
+            'history_stages_submission_id' => $submission->history_stages_id,
+            'customerinfo_section_id' => $submission->customerInfo->id,
+            'receipt_section_id' => $submission->receipts->id,
+            'message' => $message,
+            'messagefr' => $messagefr
+        ]);
+        $historySection->save();
+        return $historySection;
+    }
+    }
+
+    //Returns a new section for the created submission
+    protected function customerInfo($req, $container){
+        // return $req['fname'];]
+
+        if(!$this->isClosed($container->id)){
+        $customerInfo = new CustomerInfoSections([
+            "submission_id" => $container->id,
+            "status" => 1,
+            "fname" => $req->input('customerInfo.fname'),
+            "lname" => $req->input('customerInfo.lname'),
+            "phone" => $req->input('customerInfo.phone'),
+            "email" => $req->input('customerInfo.email'),
+            "company" => $req->input('customerInfo.company'),
+            "profession" => $req->input('customerInfo.profession'),
+            "address" => $req->input('customerInfo.address'),
+            "city" => $req->input('customerInfo.city'),
+            "country" => $req->input('customerInfo.country'),
+            "postal" => $req->input('customerInfo.postal'),
+            "chequeissue"  => $req->input('customerInfo.chequeissue')
+        ]);
+        $customerInfo->save();
+        // return $customerInfo;
+        return $customerInfo->id;
+        };
+        return;
+    }
+
+    //Returns a new section for the created submission
+    protected function receiptInfo($req, $container){
+        if(!$this->isClosed($container->id)){
+            // if(strlen(trim($req->input('customerInfo.vendor'))) > 0){
+            //     $vendor = $req->input('customerInfo.vendor');
+            // } else {
+            //     $vendor = $req->vendor;
+            // }
+        $receiptSection = new ReceiptSections([
+            'submission_id' => $container->id,
+            'status' => 1,
+            // 'vendor' => $vendor
+        ]);
+        $receiptSection->save();
+        $files = $req->file('receipt');
+
+        // I need to see if there is any files.
+        // If not, it is assumed this is an edit not a submission, since it is mandatory for a submission.
+        // We then want to find current submission's receipt section ID and find all associated photos with it.
+        // Replicate those entries and change its section ID to its new one, $receiptSection->id;
+        if(!$req->file('receipt')){
+            //Get all of the old photos, create a new ReceiptSectionSubmission for each of the old photos with the new receiptSection ($receiptSection)
+            $oldPhotos = ReceiptSectionSubmission::select('photo')->where('receipt_section_id', $container->receipts_section_id)->get();
+            foreach($oldPhotos as $oldPhoto) {
+                $receiptSubmission = new ReceiptSectionSubmission([
+                    "receipt_section_id" => $receiptSection->id,
+                    "photo" => $oldPhoto->photo
+                ]);
+                $receiptSubmission->save();
+            }
+         } else { 
+            foreach($files as $file) {
+                $filename = $this->imageUpload($file);
+                $receiptSubmission = new ReceiptSectionSubmission([
+                    "receipt_section_id" => $receiptSection->id,
+                    "photo" => $filename[0],
+                    "kind" => $filename[1]
+                ]);
+                $receiptSubmission->save();
+            }
+        }
+        //Original Receipt Products, has been switched to TradeIn
+        // $receiptProducts = $req->input('receiptProducts');
+        // foreach($receiptProducts as $receiptProd){
+        //     //Make new receiptProduct
+        //     $receiptRow = new ReceiptProducts([
+        //         "receipt_section_id" => $receiptSection->id,
+        //         "product_number" => $receiptProd['product_number'],
+        //         "product_qty" => $receiptProd['product_qty']
+        //     ]);
+        //     $receiptRow->save();
+        // };
+        
+        return $receiptSection->id;
+        }
+        return;
+    }
+
+    //Returns a new section for the created submission
+    protected function tradedinInfo($req, $container){
+        if(!$this->isClosed($container->id)){
+            if(strlen(trim($req->input('customerInfo.vendor'))) > 0){
+                $vendor = $req->input('customerInfo.vendor');
+            } else {
+                $vendor = $req->vendor;
+            }
+        $tradedinSection = new TradedinSections([
+            'submission_id' => $container->id,
+            'status' => 1,
+            'vendor' => $vendor
+        ]);
+        $tradedinSection->save();
+
+
+        //OLD FILE UPLOAD WHEN THIS SECTION ONLY HAD PHOTO UPLOADING
+        // $files = $req->file('tradein');
+        // foreach($files as $file) {
+        //     $filename = $this->imageUpload($file);
+        //     $tradedinSubmission = new TradedinSectionSubmission([
+        //         "tradedin_section_id" => $tradedinSection->id,
+        //         "photo" => $filename
+        //     ]);
+        //     $tradedinSubmission->save();
+        // }
+
+
+
+        $getfolder = CustomerInfoSections::where('submission_id', $container->id)->first();
+
+        $receiptfiles = FileUpload::where('folder', $getfolder->email)->where('size', 'new')->where('intake', 'receipt')->get();
+        $tradeinfiles = FileUpload::where('folder', $getfolder->email)->where('size', 'new')->where('intake', 'tradein')->get();
+    
+        $oldfilePath = 'uploads/'. $getfolder->email . '/new/';
+
+        $newfilePath = 'uploads/'. $getfolder->email . '/' . $container->id . '/';
+
+        $s3 = Storage::disk('local');
+        $receipts = Storage::disk('local')->allFiles($oldfilePath . 'receipt/');
+        $tradeins = Storage::disk('local')->allFiles($oldfilePath  . 'tradein/');
+
+        foreach($receipts as $receipt) {
+            $new_loc = str_replace($oldfilePath . 'receipt/', $newfilePath . 'receipt/', $receipt);
+            $s3->copy($receipt, $new_loc);
+            $s3->delete($oldfilePath . 'receipt/', $receipt);
+        }
+
+        foreach($tradeins as $tradein) {
+            $new_loc = str_replace($oldfilePath . 'tradein/', $newfilePath . 'tradein/', $tradein);
+            $s3->copy($tradein, $new_loc);
+            $s3->delete($oldfilePath . 'tradein/', $tradein);
+        }
+        
+        // // Storage::disk('local')->deleteDirectory($oldfilePath);
+
+        foreach($receiptfiles as $file){
+            $file->confirmid = $container->id; 
+            $file->projectid = $container->id;
+            $file->size = 'inuse';
+            $file->userid = $container->customer_id;
+            $file->save();      
+        }
+
+        foreach($tradeinfiles as $file){
+            $file->confirmid = $container->id; 
+            $file->projectid = $container->id;
+            $file->size = 'inuse';
+            $file->userid = $container->customer_id;
+            $file->save();      
+        }
+
+        // return 'good';
+
+        $files = $req->file('tradein');
+        if(!$req->file('tradein')){
+            //Get all of the old photos, create a new ReceiptSectionSubmission for each of the old photos with the new receiptSection ($receiptSection)
+            $oldPhotos = TradedinSectionSubmission::select('photo')->where('tradedin_section_id', $container->tradedin_section_id)->get();
+            foreach($oldPhotos as $oldPhoto) {
+                $tradedinSubmission = new TradedinSectionSubmission([
+                    "tradedin_section_id" => $tradedinSection->id,
+                    "photo" => $oldPhoto->photo
+                ]);
+                $tradedinSubmission->save();
+            }
+         } else { 
+            foreach($files as $file) {
+                $filename = $this->imageUpload($file);
+                $tradedinSubmission = new TradedinSectionSubmission([
+                    "tradedin_section_id" => $tradedinSection->id,
+                    "photo" => $filename[0]
+                ]);
+                $tradedinSubmission->save();
+            }
+        }
+
+
+
+        //This creates the brands
+        // $brandSection = $this->createBrand($req->brands, $tradedinSection->id);
+
+        $tradeinProducts = $req->input('tradeinProducts');
+        foreach($tradeinProducts as $tradeProd){
+            //Make new receiptProduct
+
+
+            if(!$tradeProd['product_qty']){
+              $tradeProd['product_qty'] = 'N/A';
+            }
+
+            if(!$tradeProd['brand']){
+                $tradeProd['brand'] = 'N/A';
+              }
+
+            if(!$tradeProd['product_number']){
+                $tradeProd['product_number'] = 'N/A';
+              }
+
+            $receiptRow = new TradeInProducts([
+                "tradedin_section_id" => $tradedinSection->id,
+                "product_number" => $tradeProd['product_number'],
+                "product_qty" => $tradeProd['product_qty'],
+                "brand" => $tradeProd['brand']
+            ]);
+            $receiptRow->save();
+        };
+        return $tradedinSection->id;
+        }
+        return;
+    }
+
+    protected function createBrand($selectedBrands, $idSection){
+        $brand = new BrandSections([
+            "tradedin_section_id" => $idSection
+        ]);
+        $brand->save();
+        $id = $brand->id;
+        
+        foreach ($selectedBrands as $br){
+            $brandSubmission = new BrandSectionSubmission([
+                "brand_id" => $br,
+                "brand_tradedin_section_id" => $id
+            ]);
+            $brandSubmission->save();
+        }
+        return $id;
+        
+    }
+
+
+    //Returns a new section for the created submission
+    protected function tradedupInfo($req, $container){
+        if(!$this->isClosed($container->id)){
+        $tradedupSection = new TradedupSections([
+            'submission_id' => $container->id,
+            'status' => 1
+        ]);
+        $tradedupSection->save();
+
+        $products = $req->input('tradeup');
+        // return $products;
+        foreach ($products as $product){
+            //Server side is prodid
+            // $json = json_encode($product);
+            if(is_string($product)){
+                $product = json_decode($product, true);
+            }
+            
+            // return $prod["id"];
+            // return gettype($prod);
+            $selectedProd = Products::select()->where('id', $product['id'])->first();
+            //Take the rebate value defined in the product, and multiple it by the quantity the user submitted
+            $amount = $selectedProd['rebate_value'] * intval($product["quantity"]);
+            $tradedupSubmission = new TradedupSectionSubmission([
+                "tradedup_section_id" => $tradedupSection->id,
+                "product_id" => $product["id"],
+                "quantity" => intval($product["quantity"]),
+                "value" => $amount,
+                "init_value" => $product["details"]["rebate_value"]
+            ]);
+            $tradedupSubmission->save();
+        }
+        return $tradedupSection->id;
+    }
+        return;
+    }
+
+    protected function checkSubmissionSections($arr){
+        //This is given an array of all 4 sections' status. If all are equal to 4 (Approved), return 4.
+        //Otherwise, if a single declined is in the submission, change submission status to declined.
+
+        //1 - Pending
+        //2 - Needs Info
+        //3 - Declined
+        //4 - Approved
+
+        $status = 1; //Pending
+            //This just checks the array to see if all are equal to 4
+        if(count(array_keys($arr, 4)) == count($arr)){
+            $status = 4; //Approved
+        } 
+        else if(in_array(3, $arr)){
+            //This takes priority over Needs Info. 
+            //If even one section is declined, then the whole submission is declined.
+            $status = 3; // Declined
+        }
+        else if(in_array(2, $arr)){
+            $status = 2; //Needs Info
+        } 
+        return $status;
+    }
+    
+    protected function closeSubmission($id){
+        //With active submissions, we still want them to be viewable 
+        //but we want to remove any editing/updating functionality once closed.
+        //This changes the submission's active status to 0.
+        $submission = Submissions::select()->where('id', $id)->first();
+        $submission->update([
+            'active' => 0
+        ]);
+        $submission->save();
+        return $submission;
+    }
+    protected function isClosed($id){
+        //Just a simple check to see if the submission is closed. 
+        //It should be closed if the status is 3/Declined or the active status is set to 0.
+        //Use this function to validate before any update/edit to a submission from either customer or admin.
+        $closed = false;
+        $submission = Submissions::select()->where('id', $id)->first();
+        if($submission->active == 0 || $submission->status == 3){
+            //Might have a second if statement to check if user is master.
+            if($submission->status == 4 || Auth::User()->role == 2){
+                return $closed;
+            }
+            $closed = true;
+            abort(403, 'Submission is closed.');
+        } 
+        return $closed;
+        
+    }
+
+    //Check if this submission belong to this user ID
+    protected function appliesTo($sid){
+        //Use this function for authentication purposes
+        $uid = Auth::User()->id;
+        $s = Submissions::select('customer_id')->where('id', $sid)->first();
+        $belongsTo = false;
+        if($uid == $s->customer_id){
+            $belongsTo = true;
+            return $belongsTo;
+        } else {
+            abort(403, "Submission does not belong to you.");
+        }
+    }
+
+    //Call this function every time you wish to upload a submission image
+    protected function imageUpload($file){        
+
+        $ext = $file->getClientOriginalExtension();
+        $filename = date('mdys').rand(1, 1000).".".$ext;
+
+                if($file->extension() === 'pdf'){    
+                    $filePath = base_path('/uploads');
+                    $file->move($filePath, $filename);
+                    $kind= 'pdf';
+                } else {
+
+        $img = Image::make($file);
+        $height = $img->height();
+        $width = $img->width();
+        if($width >= $height) {
+            // Landscape image
+            // If image width is smaller than 1000px, do not resize.
+            if($width >= 1000){
+                $img->resize(null, 1000, function ($constraint) {
+                    $constraint->aspectRatio();
+                })->save(
+                    // public_path('//uploads/lrg-'.$filename )
+                    base_path('/uploads/lrg-'.$filename )
+                );
+            } else {
+                $img->save(
+                    // public_path('//uploads/lrg-'.$filename )
+                    base_path('/uploads/lrg-'.$filename )
+                );
+            }
+
+            //Make thumbnail for landscape image
+            $img->resize(null, 200, function ($constraint) {
+                $constraint->aspectRatio();
+            })->save(
+                    // public_path('//uploads/'.$filename )
+                    base_path('/uploads/'.$filename )
+            );
+
+        } else {
+            // Portrait image
+            // If image height is smaller than 1000px, do not resize.
+            if($height >= 1000){
+                $img->resize(1000, null, function ($constraint) {
+                    $constraint->aspectRatio();
+                })->save(
+                    // public_path('//uploads/lrg-'.$filename )
+                    base_path('/uploads/lrg-'.$filename )
+            );
+            } else {
+                $img->save(
+                    // public_path('//uploads/lrg-'.$filename )
+                    base_path('/uploads/lrg-'.$filename )
+            );
+            }
+
+            //Make thumbnail for portrait image
+            $img->resize(200, null, function ($constraint) {
+                $constraint->aspectRatio();
+            })->save(
+                    // public_path('//uploads/'.$filename )
+                    base_path('/uploads/'.$filename )
+            );
+        }
+
+        $kind= 'img';
+       
+
+    }
+        //Return filename to inject into SQL entry
+        return array($filename, $kind);
+    }
+
+    protected function resetSubmissionStatus($submission){
+        if(!$this->isClosed($submission->id)){
+            $submission->update([
+                'status' => 1
+            ]);
+            $submission->save();
+        }
+        return $submission->status;
+    }
+}
+
+
+
+
+
+
+<?php
+
+namespace TradeInTradeUp\Http\Controllers;
+
+use Validator;
+use Illuminate\Http\Request;
+use TradeInTradeUp\Submissions;
+use TradeInTradeUp\ReceiptSections;
+use TradeInTradeUp\ReceiptSectionSubmission;
+// use TradeInTradeUp\ReceiptProducts;
+use TradeInTradeUp\TradeInProducts;
+use TradeInTradeUp\TradedupSections;
+use TradeInTradeUp\TradedupSectionSubmission;
+use TradeInTradeUp\TradedinSections;
+use TradeInTradeUp\TradedinSectionSubmission;
+use TradeInTradeUp\CustomerInfoSections;
+use TradeInTradeUp\Statuses;
+use TradeInTradeUp\Reasons;
+use TradeInTradeUp\Products;
+use TradeInTradeUp\ProductCategories;
+use TradeInTradeUp\PaymentStatuses;
+use TradeInTradeUp\PaymentSection;
+use TradeInTradeUp\HistoryStages;
+use TradeInTradeUp\Brands;
+use TradeInTradeUp\FileUpload;
+use TradeInTradeUp\BrandSections;
+use TradeInTradeUp\BrandSectionSubmission;
+use TradeInTradeUp\HistoryStageSubmission;
+use TradeInTradeUp\User;
+use Illuminate\Support\Facades\Mail;
+use TradeInTradeUp\Mail\RebateUpdate;
+use TradeInTradeUp\Mail\RebateUpdatePayment;
+use TradeInTradeUp\Mail\RebateUpdateAdmin;
+use Illuminate\Support\Facades\Storage;
+use Auth;
+use Image;
+use PDF;
+use Illuminate\Support\Facades\Input;
+// use Illuminate\Contracts\Encryption\DecryptException;
+// use Illuminate\Support\Facades\Crypt;
+
+class SubmissionsController extends Controller
+{
+
+
+
+    public function __construct()
+    {
+        //I think we only need to do this here to check for verification
+        // $this->middleware('auth');
+    }
+
+
+        //Get All Submissions
+        public function allSubmissions(request $request){
+
+            $statuses = Statuses::select()->get();
+    
+            if(strlen($request->input('sort_status')) > 0){
+                $status = $request->input('sort_status');
+            } else {
+                $status = 0;
+            }
+            if(strlen($request->input('sort_date')) > 0){
+                $date = $request->input('sort_date');
+            } else {
+                $date = "newest";
+            }
+            if($date == 'oldest'){
+                $ord = 'ASC';
+                $orderBy = 'created_at';
+            } else {
+                $ord = 'DESC';
+                $orderBy = 'created_at';
+            }
+    
+            if($date == 'lastupdated'){
+                $ord = 'ACS';
+                $orderBy = 'updated_at';
+            }
+    
+            if(strlen($request->input('sort_count')) > 0){
+                $count = $request->input('sort_count');
+            } else{
+                $count = 10;
+            }
+    
+            $default = Submissions::select()->with('author')->with('customerInfo')->with('submission_status')->orderBy($orderBy, $ord)->paginate($count);
+        
+            if($status){
+                if($status != 0){
+                    $submissions = Submissions::select()->where('status','like', $status)->with('author')->with('customerInfo')->with('submission_status')->orderBy('created_at', $ord)->paginate($count);
+                } else {
+                    $submissions = $default;
+                }
+            } else{
+                $submissions = $default;
+            }
+            return view('submissions', ['submissions' => $submissions, 'statuses' => $statuses, 'selected_status'=>$status, 'selected_date'=>$date, 'selected_count'=>$count]);
+        }
+
+
+            //Get a Single Submission
+    public function getSubmission($id){
+
+        
+        if(Auth::user()){
+        $user = Auth::user();
+        } 
+        
+        if($this->isCustomer()){
+            $userRole = "Customer";
+        } else {
+            $userRole = "Admin";
+        }
+
+        $payment= PaymentSection::select()->where('submission_id', $id)->first();
+        if(!$payment){
+            $payid = "none";
+        } else {
+            $payid = $payment->id;
+        }
+        $statuses = Statuses::select('id','status')->get();
+        $submission = $this->getSubmissionData($id);
+        // return $submission;
+        $receiptuploads = FileUpload::where('projectid', $id)->where('intake', 'receipt')->where('size', 'inuse')->get();
+        $history = $submission->history_stages;
+        $reasons = Reasons::select('id', 'reason')->get();
+
+        // return $submission;
+
+        return view('submission', [
+            'submission' => $submission,
+            'history' => $history,
+            'receipts' => $receiptuploads,
+            'user' => $userRole,
+            'statuses' => $statuses,
+            'reasons' => $reasons,
+            'payid' => $payid
+        ]);
+    }
+
+       //Submit Form
+       public function createSubmission(Request $request) {
+ 
+
+        // $encrypted = Crypt::encrypt('rodney@branton.ca');
+        // $decrypted = Crypt::decryptString($encrypted);
+        // return $encrypted . ' --- ' . $decrypted;
+
+
+        //Create initial submission container
+         //return $request;
+        $decoded = json_decode($request->input('customerInfo'), true);
+        $request->merge(['customerInfo'=>$decoded]);
+      
+        // return $request->receiptProducts[0]['product_number'];
+        if(Auth::User()){
+            $user = User::select()->where('id', Auth::id())->first();
+        } else {
+            return $request;
+        }
+
+        // return $request->input('customerInfo.lang');
+        $lang = $request->input('customerInfo.lang');
+
+
+        $submission = new Submissions([
+            'customer_id' => $user->id,
+            'status' => 1,
+            'active' => 1
+        ]);
+        $submission->save();
+
+        $customerSection = $this->customerInfo($request, $submission);
+        $receiptSection = $this->receiptInfo($request, $submission);
+        
+        //Let's calculate the TOTAL rebate value here once the $tradedupSection has been created;
+        // $allRebates = TradedupSectionSubmission::select()->where('tradedup_section_id', $tradedupSection)->get()->pluck("value")->toArray();
+        // $rebateValue = array_sum($allRebates); //This is the total amount in CAD
+
+        $history = new HistoryStages([
+            'submission_id' => $submission->id,
+            'author_id' => $user->id
+        ]);
+        $history->save();
+        $submission->update([
+            'customerinfo_section_id' => $customerSection,
+            'receipts_section_id' => $receiptSection,
+            'history_stages_id' => $history->id,
+            'totalAmount' => '20'
+        ]);
+        $submission->save();
+        $historyStage = $this->historyFullSubmission($this->getSubmissionData($submission->id), "Submission created", "Demande créée");
+        $subid = $submission->id;
+        $mes = "Your rebate has been created!";
+
+        $mes2 = "A rebate has been submitted.";
+        $sub = "Rebate Created";
+        if(!$user->notifications == 0){
+        //Mail::to($user)->send(new RebateUpdate($sub, $mes, $subid, $user, $lang));
+
+        }
+       // Mail::to('rodney@branton.ca')->send(new RebateUpdateAdmin($sub, $mes2, $subid, 'Rodney', $lang));
+        //Mail::to('hdelaney@mmm.com')->send(new RebateUpdateAdmin($sub, $mes2, $subid, 'Heather', $lang));
+        return $submission->id;
+    }
+
+
+
+    public function authremoveoldfiles(Request $request){
+
+        if(Auth::check()) {
+          
+            $oldfilePath = '/uploads/'. Auth::user()->email . '/new';
+            Storage::disk('local')->deleteDirectory($oldfilePath);
+            FileUpload::where('folder', Auth::user()->email)->where('size', 'new')->delete();
+
+        } 
+            return;
+    }
+
+    public function uploadfiles(Request $request){
+
+        $file = $request;
+        $name = $file['name'];
+        $filePath = '/uploads/'. $file['identify'] . '/new/' . $file['intake'] . '/' . $name;
+
+        $fileUpload = new FileUpload;
+        $fileUpload->name = str_replace("#", "%23", $name);
+        $fileUpload->file_name = str_replace("#", "%23", $name);
+        $fileUpload->folder = $file['identify'];
+        $fileUpload->intake = $file['intake'];
+        $fileUpload->size = 'new';
+        $fileUpload->rawsize = $file['files'][0]->getSize();
+        $fileUpload->kind = $file['files'][0]->getClientOriginalExtension();
+        $fileUpload->userid = 0;
+
+        if($file['userid']) {  
+            $filePath = '/uploads/'. $file['identify'] . '/' . $file['projectid'] . '/' . $file['intake'] . '/' . $name;
+            $fileUpload->userid = $file['userid'];
+            $fileUpload->projectid = $file['projectid'];
+            $fileUpload->confirmid = $file['projectid'];
+            $fileUpload->size = 'inuse';
+        }
+
+        Storage::disk('local')->put($filePath, file_get_contents($file['files'][0]));
+        $fileUpload->save();
+
+        return $request;
+    }
+
+    public function fileremove(Request $request){
+
+        
+        if($request['userid']) {  
+            $filePath = '/uploads/'. $request['identify'] . '/' . $request['projectid'] . '/' . $request['intake'] . '/' . $request['name'];
+            $fileUpload = FileUpload::where('folder',  $request['identify'])->where('name', $request['name'])->where('projectid', $request['projectid'])->where('size', 'inuse')->first();
+        } else{
+            $filePath = '/uploads/'.  $request['identify'] . '/new/' . $request['intake'] . '/' . $request['name'];
+            $fileUpload = FileUpload::where('folder',  $request['identify'])->where('name', $request['name'])->where('size', 'new')->first();
+        }
+      
+        Storage::disk('local')->delete($filePath);
+        $fileUpload->delete();
+    
+        return 'removed';
+    
+    }
+
+
+}
