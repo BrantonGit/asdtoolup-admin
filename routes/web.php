@@ -77,15 +77,15 @@ Route::get('/logout', function () {
 
 Route::get('/certificates/shipping/{id}/generate', [SubmissionsController::class, 'generatePDF'])->middleware('web');
 
-Route::get('/api/password/reset', [ForgotPasswordController::class, 'showLinkRequestForm'])->name('password.request')->middleware('web', 'guest');
+Route::get('/api/password/reset', [ForgotPasswordController::class, 'showLinkRequestForm'])->name('api.password.request')->middleware('web', 'guest');
 Route::get('/api/password/{lang}/reset', [ForgotPasswordController::class, 'showLinkRequestForm'])->name('password.requestlang')->middleware('web', 'guest');
 
-Route::post('/api/password/email', [ForgotPasswordController::class, 'sendResetLinkEmail'])->name('password.email')->middleware('web', 'guest');
+Route::post('/api/password/email', [ForgotPasswordController::class, 'sendResetLinkEmail'])->name('api.password.email')->middleware('web', 'guest');
 
-Route::get('/api/password/reset/{token}', [ResetPasswordController::class, 'showResetForm'])->name('password.reset')->middleware('web', 'guest');
+Route::get('/api/password/reset/{token}', [ResetPasswordController::class, 'showResetForm'])->name('api.password.reset')->middleware('web', 'guest');
 Route::get('/api/password/{lang}/reset/{token}', [ResetPasswordController::class, 'showResetForm'])->name('password.resetlang')->middleware('web', 'guest');
 
-Route::post('/api/password/reset', [ResetPasswordController::class, 'reset'])->name('password.update')->middleware('web', 'guest');
+Route::post('/api/password/reset', [ResetPasswordController::class, 'reset'])->name('api.password.update')->middleware('web', 'guest');
 
 Route::get('/customers', [UserController::class, 'getCustomersView'])->middleware('auth');
 Route::get('/customers/{id}', [UserController::class, 'getCustomerView'])->middleware('auth');
