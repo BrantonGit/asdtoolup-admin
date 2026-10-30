@@ -214,14 +214,21 @@ class SubmissionsController extends Controller
 
         $mes2 = "A Tool Up submission has been created. Please review the submission on the admin portal.";
         $sub = "Submission Created";
-        if(!$user->notifications == 0){
-        Mail::to($user)->send(new RebateUpdate($sub, $mes, $subid, $user, $lang));
 
+        // Notifications must never fail the submission: by this point the
+        // submission, customer info, receipts and history are already saved.
+        // A mail/SMTP outage used to return a 500, which made customers
+        // resubmit and create duplicates.
+        try {
+            if($user->notifications != 0){
+                Mail::to($user)->send(new RebateUpdate($sub, $mes, $subid, $user, $lang));
+            }
+
+            Mail::to('ian@branton.ca')->send(new RebateUpdateAdmin($sub, $mes2, $subid, 'Rodney', $lang));
+            Mail::to('melanie@accellgraphics.com')->send(new RebateUpdateAdmin($sub, $mes2, $subid, 'Melanie', $lang));
+        } catch (\Throwable $e) {
+            report($e);
         }
-
-        
-       Mail::to('ian@branton.ca')->send(new RebateUpdateAdmin($sub, $mes2, $subid, 'Rodney', $lang));
-       Mail::to('melanie@accellgraphics.com')->send(new RebateUpdateAdmin($sub, $mes2, $subid, 'Melanie', $lang));
 
         return $submission->id;
     }
