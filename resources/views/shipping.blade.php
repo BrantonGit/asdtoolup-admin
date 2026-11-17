@@ -7,6 +7,9 @@
     <h1>Redemption ID — #{{$certificate->certid}}</h1>
     <br>
 
+    @if (session('status'))
+        <div class="form-success" role="status">{{ session('status') }}</div>
+    @endif
 
     <br>
     <br>
@@ -111,19 +114,15 @@
         
         
             </div>
-        
 
-            </div>
-        
-        
         <br>
             <input class='payment-submission small-submit-button' type="submit" value="Update Redemption">
-        
-        </form>
 
+        </form>
+    </div>
 </div>
 
-
+</div>
 
 </section>
 @endsection

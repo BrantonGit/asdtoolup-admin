@@ -463,6 +463,15 @@ a {
   z-index: 3;
 }
 
+.form-success {
+  margin: 0 2rem;
+  padding: 1rem 1.25rem;
+  border-left: 4px solid #38c172;
+  background-color: #eafaf1;
+  color: #1d6432;
+  font-family: "3M-Bold";
+}
+
 .receipt-vendor {
   padding: 1rem 0;
   font-family: "3M-Bold";

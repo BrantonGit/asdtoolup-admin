@@ -834,8 +834,8 @@ class SubmissionsController extends Controller
                 $certificate->tracking = $req->input('tracking');
                                }
                 $certificate->save();
-              
-                return redirect('/certificates');
+
+                return redirect('/certificates/shipping/' . $id)->with('status', 'Shipping details updated.');
             } else {
                 abort(403); 
             }
