@@ -106,7 +106,7 @@
         
                 <div class='flex-row-item'>
                     <label for="tracking">Tracking Number:</label>
-                    <input type="number" step="any" placeholder="Tracking Number" value='{{ $certificate->tracking }}' name='tracking'>          
+                    <input type="text" placeholder="Tracking Number" value='{{ $certificate->tracking }}' name='tracking'>          
                 </div>
         
         

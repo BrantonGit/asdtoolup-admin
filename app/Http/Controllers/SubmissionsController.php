@@ -714,22 +714,32 @@ class SubmissionsController extends Controller
                 $user = User::where('id', $submission->customer_id)->first();
                 $user->tiervalue = $user->tiervalue + $request->purchasevalue;
                 $user->save();
-
-                $subjectPay = "Submission Ready for Review";
-                $mesPay = "A submission is ready for review.";
-                Mail::to('ian@branton.ca')->send(new RebateUpdatePayment($subjectPay, $mesPay, $subid, 'Ian', "en"));
-               // Mail::to('curtis@branton.ca')->send(new RebateUpdatePayment($subjectPay, $mesPay, $subid, 'Curtis', "en"));
             }
                 $submission->update(['status'=>$submissionStatus]);
                 $submission->save();
-                $mes = "Your submission has been reviewed!";
-                $subject = "Submission Reviewed";
-    
-    
-                //We will need to push a language element into the submission to refer to...
-                if(!$author->notifications == 1){
-                    //Mail:: FOR TRAINUP
-                 Mail::to($author)->send(new RebateUpdate($subject, $mes, $subid, $author, "en"));
+
+                // Notifications must never fail the review: by this point the section
+                // statuses, the submission status and any payment row are already saved.
+                // An SMTP outage used to return a 500 after the approval had been saved,
+                // which made reviewers retry an approval that had already gone through.
+                try {
+                    if($submissionStatus === 4){
+                        $subjectPay = "Submission Ready for Review";
+                        $mesPay = "A submission is ready for review.";
+                        Mail::to('ian@branton.ca')->send(new RebateUpdatePayment($subjectPay, $mesPay, $subid, 'Ian', "en"));
+                       // Mail::to('curtis@branton.ca')->send(new RebateUpdatePayment($subjectPay, $mesPay, $subid, 'Curtis', "en"));
+                    }
+
+                    $mes = "Your submission has been reviewed!";
+                    $subject = "Submission Reviewed";
+
+                    //We will need to push a language element into the submission to refer to...
+                    if(!$author->notifications == 1){
+                        //Mail:: FOR TRAINUP
+                        Mail::to($author)->send(new RebateUpdate($subject, $mes, $subid, $author, "en"));
+                    }
+                } catch (\Throwable $e) {
+                    report($e);
                 }
              }
          
@@ -820,7 +830,7 @@ class SubmissionsController extends Controller
                 $certificate = Certificates::where('certid', $id)->first();
     
                 $certificate->shipped = $req->input('status');
-                if($req->input('tracking') != null){
+                if($req->has('tracking')){
                 $certificate->tracking = $req->input('tracking');
                                }
                 $certificate->save();
